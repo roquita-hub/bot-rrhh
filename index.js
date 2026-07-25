@@ -1,29 +1,16 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
-const http = require('http');
 
-// --- 🌐 TRUCO PARA MANTENER RENDER ENCENDIDO 24/7 ---
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.write('Bot de Discord Policia Nacional Activo 24/7');
-    res.end();
-}).listen(PORT, () => {
-    console.log(`🌍 Servidor Web de soporte escuchando en el puerto ${PORT}`);
-});
-
-// --- CONFIGURACIÓN DEL BOT ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.MessageContent
     ]
 });
 
 const DB_FILE = './db.json';
-const ROL_ADMIN_NOMBRE = "RRHH"; 
 
 function loadData() {
     if (!fs.existsSync(DB_FILE)) {
@@ -40,22 +27,20 @@ function saveData(data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-function esAutorizado(member) {
-    if (!member) return false;
-    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
-    if (member.roles.cache.some(role => role.name === ROL_ADMIN_NOMBRE)) return true;
-    return false;
+// Función para verificar si es Admin o tiene rol RRHH
+function isStaff(member) {
+    return member.permissions.has('Administrator') || member.roles.cache.some(r => r.name.toLowerCase() === 'rrhh');
 }
 
 client.once('ready', () => {
     console.log(`✅ ¡Bot conectado exitosamente como ${client.user.tag}!`);
 });
 
-// --- COMANDOS Y EVENTOS DE DISCORD ---
+// Comandos por Texto
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // 1. !panel
+    // Comando Panel
     if (message.content === '!panel') {
         const embed = new EmbedBuilder()
             .setTitle('🛡️ Control de Asistencia y Horas')
@@ -63,109 +48,58 @@ client.on('messageCreate', async (message) => {
             .setColor('#0055ff');
 
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('btn_entrada').setLabel('Entrada').setStyle(ButtonStyle.Success).setEmoji('🟢'),
-            new ButtonBuilder().setCustomId('btn_salida').setLabel('Salida').setStyle(ButtonStyle.Danger).setEmoji('🔴'),
-            new ButtonBuilder().setCustomId('btn_horas').setLabel('Mis Horas').setStyle(ButtonStyle.Primary).setEmoji('📊'),
-            new ButtonBuilder().setCustomId('btn_ranking').setLabel('Ranking').setStyle(ButtonStyle.Secondary).setEmoji('🏆')
+            new ButtonBuilder().setCustomId('btn_entrada').setLabel('ENTRAR').setStyle(ButtonStyle.Success).setEmoji('🟢'),
+            new ButtonBuilder().setCustomId('btn_salida').setLabel('SALIR').setStyle(ButtonStyle.Danger).setEmoji('🔴'),
+            new ButtonBuilder().setCustomId('btn_horas').setLabel('MIS HORAS').setStyle(ButtonStyle.Primary).setEmoji('📊'),
+            new ButtonBuilder().setCustomId('btn_ranking').setLabel('RANKING').setStyle(ButtonStyle.Secondary).setEmoji('🏆')
         );
 
-        return message.channel.send({ embeds: [embed], components: [row] });
+        await message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 2. !verranking
-    if (message.content === '!verranking') {
-        if (!esAutorizado(message.member)) return message.reply('❌ No tienes permisos.');
-
-        const data = loadData();
-        const entries = Object.entries(data.totalHours);
-        if (entries.length === 0) return message.reply('🏆 Aún no hay registros.');
-
-        entries.sort((a, b) => b[1] - a[1]);
-
-        let rankingMsg = '📋 **RANKING GENERAL DE OFICIALES** 📋\n\n';
-        entries.forEach(([uId, ms], index) => {
-            const hrs = (ms / (1000 * 60 * 60)).toFixed(2);
-            rankingMsg += `**#${index + 1}** <@${uId}> — **${hrs} hrs**\n`;
-        });
-
-        return message.channel.send(rankingMsg);
-    }
-
-    // 3. !verhoras @usuario
-    if (message.content.startsWith('!verhoras')) {
-        if (!esAutorizado(message.member)) return message.reply('❌ No tienes permisos.');
+    // 🔴 COMANDO: FORZAR SALIDA (!forcarsalida @usuario [guardar/descartar])
+    if (message.content.startsWith('!forcarsalida') || message.content.startsWith('!fs')) {
+        if (!isStaff(message.member)) {
+            return message.reply('❌ No tienes permisos para usar este comando (requiere Administrador o rol `RRHH`).');
+        }
 
         const targetUser = message.mentions.users.first();
-        if (!targetUser) return message.reply('⚠️ Usa: `!verhoras @Oficial`');
-
-        const data = loadData();
-        const totalMs = data.totalHours[targetUser.id] || 0;
-        const totalHrs = (totalMs / (1000 * 60 * 60)).toFixed(2);
-
-        return message.channel.send(`📊 <@${targetUser.id}> tiene **${totalHrs} horas** acumuladas.`);
-    }
-
-    // 4. !sumarhoras @usuario minutos
-    if (message.content.startsWith('!sumarhoras')) {
-        if (!esAutorizado(message.member)) return message.reply('❌ No tienes permisos.');
-
-        const args = message.content.trim().split(/\s+/);
-        const targetUser = message.mentions.users.first();
-        const minutes = parseInt(args[2]);
-
-        if (!targetUser || isNaN(minutes)) {
-            return message.reply('⚠️ Ejemplo de uso: `!sumarhoras @Oficial 60`');
+        if (!targetUser) {
+            return message.reply('⚠️ Debes mencionar al oficial. Ejemplo: `!forcarsalida @Oficial`');
         }
 
         const data = loadData();
-        const msToAdd = minutes * 60 * 1000;
+        const userId = targetUser.id;
 
-        if (!data.totalHours[targetUser.id]) data.totalHours[targetUser.id] = 0;
-        data.totalHours[targetUser.id] += msToAdd;
-        saveData(data);
-
-        const totalHrs = (data.totalHours[targetUser.id] / (1000 * 60 * 60)).toFixed(2);
-        return message.channel.send(`➕ Se sumaron **${minutes} min** a <@${targetUser.id}>. Total: **${totalHrs} hrs**.`);
-    }
-
-    // 5. !restarhoras @usuario minutos
-    if (message.content.startsWith('!restarhoras')) {
-        if (!esAutorizado(message.member)) return message.reply('❌ No tienes permisos.');
-
-        const args = message.content.trim().split(/\s+/);
-        const targetUser = message.mentions.users.first();
-        const minutes = parseInt(args[2]);
-
-        if (!targetUser || isNaN(minutes)) {
-            return message.reply('⚠️ Ejemplo de uso: `!restarhoras @Oficial 30`');
+        if (!data.activeSessions[userId]) {
+            return message.reply(`⚠️ El oficial <@${userId}> **no tiene un turno activo** en este momento.`);
         }
 
-        const data = loadData();
-        const msToSub = minutes * 60 * 1000;
+        const args = message.content.split(' ');
+        const mode = args[2] ? args[2].toLowerCase() : 'guardar'; // Por defecto guarda
 
-        if (!data.totalHours[targetUser.id]) data.totalHours[targetUser.id] = 0;
-        data.totalHours[targetUser.id] = Math.max(0, data.totalHours[targetUser.id] - msToSub);
-        saveData(data);
+        const startTime = data.activeSessions[userId];
+        const now = Date.now();
+        const elapsedMs = now - startTime;
+        delete data.activeSessions[userId];
 
-        const totalHrs = (data.totalHours[targetUser.id] / (1000 * 60 * 60)).toFixed(2);
-        return message.channel.send(`➖ Se restaron **${minutes} min** a <@${targetUser.id}>. Total: **${totalHrs} hrs**.`);
-    }
+        if (mode === 'descartar') {
+            saveData(data);
+            return message.reply(`🛑 **TURNO CANCELADO** - Se forzó la salida de <@${userId}> **sin acumular horas**.`);
+        } else {
+            if (!data.totalHours[userId]) data.totalHours[userId] = 0;
+            data.totalHours[userId] += elapsedMs;
+            saveData(data);
 
-    // 6. !resetearhoras @usuario
-    if (message.content.startsWith('!resetearhoras')) {
-        if (!esAutorizado(message.member)) return message.reply('❌ No tienes permisos.');
+            const minutesWorked = Math.floor(elapsedMs / (1000 * 60));
+            const hoursWorked = (elapsedMs / (1000 * 60 * 60)).toFixed(2);
 
-        const targetUser = message.mentions.users.first();
-        if (!targetUser) return message.reply('⚠️ Usa: `!resetearhoras @Oficial`');
-
-        const data = loadData();
-        data.totalHours[targetUser.id] = 0;
-        saveData(data);
-
-        return message.channel.send(`🔄 Las horas de <@${targetUser.id}> se reiniciaron a **0 hrs**.`);
+            return message.reply(`🔴 **SALIDA FORZADA** - Se cerró el turno de <@${userId}>. Se le sumaron **${minutesWorked} min** (${hoursWorked} hrs).`);
+        }
     }
 });
 
+// Botones del Panel
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -175,16 +109,16 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.customId === 'btn_entrada') {
         if (data.activeSessions[userId]) {
-            return interaction.reply({ content: '⚠️ Ya tienes un turno activo.', flags: 64 });
+            return interaction.reply({ content: '⚠️ Ya tienes un turno activo registrado.', ephemeral: true });
         }
         data.activeSessions[userId] = now;
         saveData(data);
-        return interaction.reply({ content: `✅ **ENTRADA REGISTRADA** - <@${userId}>`, flags: 64 });
+        return interaction.reply({ content: `✅ **ENTRADA REGISTRADA** - ¡Buen servicio, oficial <@${userId}>!`, ephemeral: true });
     }
 
     if (interaction.customId === 'btn_salida') {
         if (!data.activeSessions[userId]) {
-            return interaction.reply({ content: '⚠️ No tienes un turno activo.', flags: 64 });
+            return interaction.reply({ content: '⚠️ No tienes un turno activo.', ephemeral: true });
         }
         const startTime = data.activeSessions[userId];
         const elapsedMs = now - startTime;
@@ -195,26 +129,30 @@ client.on('interactionCreate', async (interaction) => {
         saveData(data);
 
         const minutesWorked = Math.floor(elapsedMs / (1000 * 60));
-        return interaction.reply({ content: `🔴 **SALIDA REGISTRADA** - Estuviste **${minutesWorked} min**.`, flags: 64 });
+        return interaction.reply({ content: `🔴 **SALIDA REGISTRADA** - Estuviste en servicio **${minutesWorked} minutos**.`, ephemeral: true });
     }
 
     if (interaction.customId === 'btn_horas') {
         const totalMs = data.totalHours[userId] || 0;
+        let activeText = '';
+        if (data.activeSessions[userId]) {
+            const currentMins = Math.floor((now - data.activeSessions[userId]) / (1000 * 60));
+            activeText = `\n⏱️ *Turno en progreso:* **${currentMins} min**`;
+        }
         const totalHrs = (totalMs / (1000 * 60 * 60)).toFixed(2);
-        return interaction.reply({ content: `📊 Tu acumulado es **${totalHrs} horas**.`, flags: 64 });
+        return interaction.reply({ content: `📊 <@${userId}>, tu tiempo acumulado es **${totalHrs} horas**.${activeText}`, ephemeral: true });
     }
 
     if (interaction.customId === 'btn_ranking') {
         const entries = Object.entries(data.totalHours);
-        if (entries.length === 0) return interaction.reply({ content: '🏆 Aún no hay registros.', flags: 64 });
+        if (entries.length === 0) return interaction.reply({ content: '🏆 Sin registros aún.', ephemeral: true });
 
         entries.sort((a, b) => b[1] - a[1]);
-        let rankingMsg = '🏆 **TOP 5 OFICIALES** 🏆\n\n';
-        entries.slice(0, 5).forEach(([uId, ms], index) => {
-            const hrs = (ms / (1000 * 60 * 60)).toFixed(2);
-            rankingMsg += `**#${index + 1}** <@${uId}> — **${hrs} hrs**\n`;
+        let msg = '🏆 **RANKING DE OFICIALES** 🏆\n\n';
+        entries.slice(0, 10).forEach(([uId, ms], i) => {
+            msg += `**#${i + 1}** <@${uId}> — **${(ms / (1000 * 60 * 60)).toFixed(2)} hrs**\n`;
         });
-        return interaction.reply({ content: rankingMsg, flags: 64 });
+        return interaction.reply({ content: msg, ephemeral: true });
     }
 });
 
