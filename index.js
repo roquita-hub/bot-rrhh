@@ -1,6 +1,18 @@
 const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
+const http = require('http');
 
+// --- 🌐 TRUCO PARA MANTENER RENDER ENCENDIDO 24/7 ---
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.write('Bot de Discord Policia Nacional Activo 24/7');
+    res.end();
+}).listen(PORT, () => {
+    console.log(`🌍 Servidor Web de soporte escuchando en el puerto ${PORT}`);
+});
+
+// --- CONFIGURACIÓN DEL BOT ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -57,15 +69,15 @@ client.on('messageCreate', async (message) => {
         await message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 🔴 COMANDO: FORZAR SALIDA (!forcarsalida @usuario [guardar/descartar])
-    if (message.content.startsWith('!forcarsalida') || message.content.startsWith('!fs')) {
+    // 🔴 COMANDO: FORZAR SALIDA (!forzarsalida @usuario [guardar/descartar])
+    if (message.content.startsWith('!forzarsalida') || message.content.startsWith('!fs')) {
         if (!isStaff(message.member)) {
             return message.reply('❌ No tienes permisos para usar este comando (requiere Administrador o rol `RRHH`).');
         }
 
         const targetUser = message.mentions.users.first();
         if (!targetUser) {
-            return message.reply('⚠️ Debes mencionar al oficial. Ejemplo: `!forcarsalida @Oficial`');
+            return message.reply('⚠️ Debes mencionar al oficial. Ejemplo: `!forzarsalida @Oficial`');
         }
 
         const data = loadData();
