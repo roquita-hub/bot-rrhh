@@ -2,14 +2,14 @@ const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle,
 const fs = require('fs');
 const http = require('http');
 
-// --- 🌐 TRUCO PARA MANTENER RENDER ENCENDIDO 24/7 ---
-const PORT = process.env.PORT || 3000;
+// --- 🌐 SERVIDOR WEB PARA QUE RENDER NO APAGUE EL BOT ---
+const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.write('Bot de Discord Policia Nacional Activo 24/7');
+    res.write('Bot Policia Nacional Activo 24/7');
     res.end();
 }).listen(PORT, () => {
-    console.log(`🌍 Servidor Web de soporte escuchando en el puerto ${PORT}`);
+    console.log(`🌐 Servidor Web de soporte escuchando en el puerto ${PORT}`);
 });
 
 // --- CONFIGURACIÓN DEL BOT ---
@@ -39,7 +39,7 @@ function saveData(data) {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-// Función para verificar si es Admin o tiene rol RRHH
+// Función para verificar si es Admin de Discord o tiene rol RRHH
 function isStaff(member) {
     return member.permissions.has('Administrator') || member.roles.cache.some(r => r.name.toLowerCase() === 'rrhh');
 }
@@ -48,11 +48,11 @@ client.once('ready', () => {
     console.log(`✅ ¡Bot conectado exitosamente como ${client.user.tag}!`);
 });
 
-// Comandos por Texto
+// --- COMANDOS POR TEXTO ---
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // Comando Panel
+    // 1. Comando Panel
     if (message.content === '!panel') {
         const embed = new EmbedBuilder()
             .setTitle('🛡️ Control de Asistencia y Horas')
@@ -66,52 +66,104 @@ client.on('messageCreate', async (message) => {
             new ButtonBuilder().setCustomId('btn_ranking').setLabel('RANKING').setStyle(ButtonStyle.Secondary).setEmoji('🏆')
         );
 
-        await message.channel.send({ embeds: [embed], components: [row] });
+        return message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 🔴 COMANDO: FORZAR SALIDA (!forzarsalida @usuario [guardar/descartar])
-    if (message.content.startsWith('!forzarsalida') || message.content.startsWith('!fs')) {
-        if (!isStaff(message.member)) {
-            return message.reply('❌ No tienes permisos para usar este comando (requiere Administrador o rol `RRHH`).');
-        }
+    // 2. 👑 Ranking completo para Admins/RRHH (!verranking)
+    if (message.content === '!verranking') {
+        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
+        const data = loadData();
+        const entries = Object.entries(data.totalHours);
+        if (entries.length === 0) return message.reply('🏆 Aún no hay registros.');
 
+        entries.sort((a, b) => b[1] - a[1]);
+        let msg = '📋 **RANKING GENERAL DE OFICIALES** 📋\n\n';
+        entries.forEach(([uId, ms], i) => {
+            msg += `**#${i + 1}** <@${uId}> — **${(ms / (1000 * 60 * 60)).toFixed(2)} hrs**\n`;
+        });
+        return message.channel.send(msg);
+    }
+
+    // 3. 👑 Sumar horas (!sumarhoras @usuario 60)
+    if (message.content.startsWith('!sumarhoras')) {
+        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
+        const args = message.content.split(' ');
         const targetUser = message.mentions.users.first();
-        if (!targetUser) {
-            return message.reply('⚠️ Debes mencionar al oficial. Ejemplo: `!forzarsalida @Oficial`');
-        }
+        const minutes = parseInt(args[2]);
+
+        if (!targetUser || isNaN(minutes)) return message.reply('⚠️ Uso: `!sumarhoras @Usuario <minutos>`');
+
+        const data = loadData();
+        if (!data.totalHours[targetUser.id]) data.totalHours[targetUser.id] = 0;
+        data.totalHours[targetUser.id] += minutes * 60 * 1000;
+        saveData(data);
+
+        return message.channel.send(`➕ Se le sumaron **${minutes} minutos** a <@${targetUser.id}>.`);
+    }
+
+    // 4. 👑 Restar horas (!restarhoras @usuario 30)
+    if (message.content.startsWith('!restarhoras')) {
+        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
+        const args = message.content.split(' ');
+        const targetUser = message.mentions.users.first();
+        const minutes = parseInt(args[2]);
+
+        if (!targetUser || isNaN(minutes)) return message.reply('⚠️ Uso: `!restarhoras @Usuario <minutos>`');
+
+        const data = loadData();
+        if (!data.totalHours[targetUser.id]) data.totalHours[targetUser.id] = 0;
+        data.totalHours[targetUser.id] = Math.max(0, data.totalHours[targetUser.id] - (minutes * 60 * 1000));
+        saveData(data);
+
+        return message.channel.send(`➖ Se le restaron **${minutes} minutos** a <@${targetUser.id}>.`);
+    }
+
+    // 5. 👑 Resetear a 0 (!resetearhoras @usuario)
+    if (message.content.startsWith('!resetearhoras')) {
+        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
+        const targetUser = message.mentions.users.first();
+        if (!targetUser) return message.reply('⚠️ Uso: `!resetearhoras @Usuario`');
+
+        const data = loadData();
+        data.totalHours[targetUser.id] = 0;
+        saveData(data);
+
+        return message.channel.send(`🔄 Horas de <@${targetUser.id}> reiniciadas a **0**.`);
+    }
+
+    // 6. 👑 Forzar salida (!forzarsalida @usuario [descartar])
+    if (message.content.startsWith('!forzarsalida') || message.content.startsWith('!fs')) {
+        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
+        const targetUser = message.mentions.users.first();
+        if (!targetUser) return message.reply('⚠️ Debes mencionar al oficial. Ejemplo: `!forzarsalida @Oficial`');
 
         const data = loadData();
         const userId = targetUser.id;
 
-        if (!data.activeSessions[userId]) {
-            return message.reply(`⚠️ El oficial <@${userId}> **no tiene un turno activo** en este momento.`);
-        }
+        if (!data.activeSessions[userId]) return message.reply(`⚠️ <@${userId}> **no tiene un turno activo**.`);
 
         const args = message.content.split(' ');
-        const mode = args[2] ? args[2].toLowerCase() : 'guardar'; // Por defecto guarda
+        const mode = args[2] ? args[2].toLowerCase() : 'guardar';
 
         const startTime = data.activeSessions[userId];
-        const now = Date.now();
-        const elapsedMs = now - startTime;
+        const elapsedMs = Date.now() - startTime;
         delete data.activeSessions[userId];
 
         if (mode === 'descartar') {
             saveData(data);
-            return message.reply(`🛑 **TURNO CANCELADO** - Se forzó la salida de <@${userId}> **sin acumular horas**.`);
+            return message.reply(`🛑 Turno de <@${userId}> cancelado **sin guardar horas**.`);
         } else {
             if (!data.totalHours[userId]) data.totalHours[userId] = 0;
             data.totalHours[userId] += elapsedMs;
             saveData(data);
 
             const minutesWorked = Math.floor(elapsedMs / (1000 * 60));
-            const hoursWorked = (elapsedMs / (1000 * 60 * 60)).toFixed(2);
-
-            return message.reply(`🔴 **SALIDA FORZADA** - Se cerró el turno de <@${userId}>. Se le sumaron **${minutesWorked} min** (${hoursWorked} hrs).`);
+            return message.reply(`🔴 Salida forzada para <@${userId}>. Se sumaron **${minutesWorked} min**.`);
         }
     }
 });
 
-// Botones del Panel
+// --- BOTONES DEL PANEL ---
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -121,16 +173,16 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.customId === 'btn_entrada') {
         if (data.activeSessions[userId]) {
-            return interaction.reply({ content: '⚠️ Ya tienes un turno activo registrado.', ephemeral: true });
+            return interaction.reply({ content: '⚠️ Ya tienes un turno activo.', flags: 64 });
         }
         data.activeSessions[userId] = now;
         saveData(data);
-        return interaction.reply({ content: `✅ **ENTRADA REGISTRADA** - ¡Buen servicio, oficial <@${userId}>!`, ephemeral: true });
+        return interaction.reply({ content: `✅ **ENTRADA REGISTRADA** - ¡Buen servicio <@${userId}>!`, flags: 64 });
     }
 
     if (interaction.customId === 'btn_salida') {
         if (!data.activeSessions[userId]) {
-            return interaction.reply({ content: '⚠️ No tienes un turno activo.', ephemeral: true });
+            return interaction.reply({ content: '⚠️ No tienes un turno activo.', flags: 64 });
         }
         const startTime = data.activeSessions[userId];
         const elapsedMs = now - startTime;
@@ -141,7 +193,7 @@ client.on('interactionCreate', async (interaction) => {
         saveData(data);
 
         const minutesWorked = Math.floor(elapsedMs / (1000 * 60));
-        return interaction.reply({ content: `🔴 **SALIDA REGISTRADA** - Estuviste en servicio **${minutesWorked} minutos**.`, ephemeral: true });
+        return interaction.reply({ content: `🔴 **SALIDA REGISTRADA** - Estuviste en servicio **${minutesWorked} minutos**.`, flags: 64 });
     }
 
     if (interaction.customId === 'btn_horas') {
@@ -152,19 +204,19 @@ client.on('interactionCreate', async (interaction) => {
             activeText = `\n⏱️ *Turno en progreso:* **${currentMins} min**`;
         }
         const totalHrs = (totalMs / (1000 * 60 * 60)).toFixed(2);
-        return interaction.reply({ content: `📊 <@${userId}>, tu tiempo acumulado es **${totalHrs} horas**.${activeText}`, ephemeral: true });
+        return interaction.reply({ content: `📊 <@${userId}>, tu tiempo acumulado es **${totalHrs} horas**.${activeText}`, flags: 64 });
     }
 
     if (interaction.customId === 'btn_ranking') {
         const entries = Object.entries(data.totalHours);
-        if (entries.length === 0) return interaction.reply({ content: '🏆 Sin registros aún.', ephemeral: true });
+        if (entries.length === 0) return interaction.reply({ content: '🏆 Sin registros aún.', flags: 64 });
 
         entries.sort((a, b) => b[1] - a[1]);
-        let msg = '🏆 **RANKING DE OFICIALES** 🏆\n\n';
-        entries.slice(0, 10).forEach(([uId, ms], i) => {
+        let msg = '🏆 **TOP 5 OFICIALES** 🏆\n\n';
+        entries.slice(0, 5).forEach(([uId, ms], i) => {
             msg += `**#${i + 1}** <@${uId}> — **${(ms / (1000 * 60 * 60)).toFixed(2)} hrs**\n`;
         });
-        return interaction.reply({ content: msg, ephemeral: true });
+        return interaction.reply({ content: msg, flags: 64 });
     }
 });
 
