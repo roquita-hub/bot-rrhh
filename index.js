@@ -78,4 +78,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // REEMPLAZA EL TEXTO DE ABAJO CON TU TOKEN DE VERDAD
-client.login(process.env.MTUzMDM2NTkzOTI2OTUwMTAzOQ.GK0aaH.fs41s5priPaIVZNQTGeu8d-AGCv3WXes1eBDO0);
+client.login(process.env.TOKEN);
