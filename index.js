@@ -1,223 +1,316 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { 
+  Client, 
+  GatewayIntentBits, 
+  Partials, 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  PermissionFlagsBits 
+} = require('discord.js');
+const express = require('express');
 const fs = require('fs');
-const http = require('http');
+const path = require('path');
 
-// --- 🌐 SERVIDOR WEB PARA QUE RENDER NO APAGUE EL BOT ---
+// --- SERVIDOR WEB PARA RENDER / UPTIMEROBOT ---
+const app = express();
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.write('Bot Policia Nacional Activo 24/7');
-    res.end();
-}).listen(PORT, () => {
-    console.log(`🌐 Servidor Web de soporte escuchando en el puerto ${PORT}`);
+
+app.get('/', (req, res) => {
+  res.send('🤖 Bot PNP RRHH está activo 24/7.');
 });
 
-// --- CONFIGURACIÓN DEL BOT ---
+app.listen(PORT, () => {
+  console.log(`🌐 Servidor Web de soporte escuchando en el puerto ${PORT}`);
+});
+
+// --- INICIALIZACIÓN DEL BOT DISCORD ---
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.MessageContent
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers
+  ],
+  partials: [Partials.Channel]
 });
 
-const DB_FILE = './db.json';
+const DATA_FILE = path.join(__dirname, 'data.json');
 
+// Cargar o inicializar la estructura de datos por Servidor (Guild ID)
 function loadData() {
-    if (!fs.existsSync(DB_FILE)) {
-        fs.writeFileSync(DB_FILE, JSON.stringify({ activeSessions: {}, totalHours: {} }));
-    }
-    try {
-        return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    } catch (e) {
-        return { activeSessions: {}, totalHours: {} };
-    }
+  if (!fs.existsSync(DATA_FILE)) {
+    return {};
+  }
+  try {
+    const raw = fs.readFileSync(DATA_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('Error al leer data.json, inicializando vacío:', err);
+    return {};
+  }
 }
 
 function saveData(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Error al guardar data.json:', err);
+  }
 }
 
-// Función para verificar si es Admin de Discord o tiene rol RRHH
-function isStaff(member) {
-    return member.permissions.has('Administrator') || member.roles.cache.some(r => r.name.toLowerCase() === 'rrhh');
+// Asegurar estructura para un servidor específico
+function ensureGuildData(data, guildId) {
+  if (!data[guildId]) {
+    data[guildId] = {
+      activeSessions: {}, // userId -> timestamp de entrada
+      totalTimeMs: {},    // userId -> milisegundos acumulados
+      userNames: {}       // userId -> displayName
+    };
+  }
+  if (!data[guildId].activeSessions) data[guildId].activeSessions = {};
+  if (!data[guildId].totalTimeMs) data[guildId].totalTimeMs = {};
+  if (!data[guildId].userNames) data[guildId].userNames = {};
 }
 
+// Utilidad para formatear milisegundos a hh:mm:ss
+function formatDuration(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+// Verificar si el usuario tiene permiso RRHH / Admin
+function isRRHH(member) {
+  if (!member) return false;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  return member.roles.cache.some(role => role.name.toLowerCase() === 'rrhh');
+}
+
+// --- EVENTO READY ---
 client.once('ready', () => {
-    console.log(`✅ ¡Bot conectado exitosamente como ${client.user.tag}!`);
+  console.log(`✅ ¡Bot conectado exitosamente como ${client.user.tag}!`);
 });
 
-// --- COMANDOS POR TEXTO ---
+// --- COMANDOS POR MENSAJE ---
 client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
+  if (message.author.bot || !message.guild) return;
 
-    // 1. Comando Panel
-    if (message.content === '!panel') {
-        const embed = new EmbedBuilder()
-            .setTitle('🛡️ Control de Asistencia y Horas')
-            .setDescription('Presiona los botones para registrar tu entrada, salida o consultar tu tiempo en servicio.')
-            .setColor('#0055ff');
+  const content = message.content.trim();
+  const guildId = message.guild.id;
+  const db = loadData();
+  ensureGuildData(db, guildId);
 
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('btn_entrada').setLabel('ENTRAR').setStyle(ButtonStyle.Success).setEmoji('🟢'),
-            new ButtonBuilder().setCustomId('btn_salida').setLabel('SALIR').setStyle(ButtonStyle.Danger).setEmoji('🔴'),
-            new ButtonBuilder().setCustomId('btn_horas').setLabel('MIS HORAS').setStyle(ButtonStyle.Primary).setEmoji('📊'),
-            new ButtonBuilder().setCustomId('btn_ranking').setLabel('RANKING').setStyle(ButtonStyle.Secondary).setEmoji('🏆')
-        );
-
-        return message.channel.send({ embeds: [embed], components: [row] });
+  // 1. Comando !panel
+  if (content === '!panel') {
+    if (!isRRHH(message.member)) {
+      return message.reply('❌ Solo personal autorizado de **RRHH** o Administradores pueden desplegar el panel.');
     }
 
-    // 2. 👑 Ranking completo para Admins/RRHH (!verranking)
-    if (message.content === '!verranking') {
-        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
-        const data = loadData();
-        const entries = Object.entries(data.totalHours);
-        if (entries.length === 0) return message.reply('🏆 Aún no hay registros.');
+    const embed = new EmbedBuilder()
+      .setTitle('POLICÍA NACIONAL DEL PERÚ - CONTROL DE ASISTENCIA')
+      .setDescription(
+        'Bienvenido al sistema de registro de turno de servicio.\n\n' +
+        '🟢 **Marcar Entrada:** Inicia tu turno de servicio.\n' +
+        '🔴 **Marcar Salida:** Finaliza tu turno y registra tus horas trabajadas.\n' +
+        '📊 **Ver Mis Horas:** Consulta tu tiempo total acumulado en este servidor.'
+      )
+      .setColor('#008000')
+      .setThumbnail('https://i.imgur.com/8Q9Z8gO.png')
+      .setFooter({ text: 'Dirección de Recursos Humanos - PNP' });
 
-        entries.sort((a, b) => b[1] - a[1]);
-        let msg = '📋 **RANKING GENERAL DE OFICIALES** 📋\n\n';
-        entries.forEach(([uId, ms], i) => {
-            msg += `**#${i + 1}** <@${uId}> — **${(ms / (1000 * 60 * 60)).toFixed(2)} hrs**\n`;
-        });
-        return message.channel.send(msg);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('btn_entrada')
+        .setLabel('Marcar Entrada')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('🟢'),
+      new ButtonBuilder()
+        .setCustomId('btn_salida')
+        .setLabel('Marcar Salida')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('🔴'),
+      new ButtonBuilder()
+        .setCustomId('btn_mishoras')
+        .setLabel('Ver Mis Horas')
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji('📊')
+    );
+
+    await message.channel.send({ embeds: [embed], components: [row] });
+    return message.delete().catch(() => {});
+  }
+
+  // 2. Comando !verranking
+  if (content === '!verranking') {
+    const guildData = db[guildId];
+    const userIds = Object.keys(guildData.totalTimeMs);
+
+    if (userIds.length === 0) {
+      return message.reply('ℹ️ Aún no hay registros de horas en este servidor.');
     }
 
-    // 3. 👑 Sumar horas (!sumarhoras @usuario 60)
-    if (message.content.startsWith('!sumarhoras')) {
-        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
-        const args = message.content.split(' ');
-        const targetUser = message.mentions.users.first();
-        const minutes = parseInt(args[2]);
+    const sorted = userIds
+      .map(id => ({
+        id,
+        name: guildData.userNames[id] || `<@${id}>`,
+        time: guildData.totalTimeMs[id] || 0
+      }))
+      .sort((a, b) => b.time - a.time);
 
-        if (!targetUser || isNaN(minutes)) return message.reply('⚠️ Uso: `!sumarhoras @Usuario <minutos>`');
+    let rankingText = '';
+    sorted.slice(0, 15).forEach((item, index) => {
+      const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+      rankingText += `${medal} **${item.name}** — ${formatDuration(item.time)}\n`;
+    });
 
-        const data = loadData();
-        if (!data.totalHours[targetUser.id]) data.totalHours[targetUser.id] = 0;
-        data.totalHours[targetUser.id] += minutes * 60 * 1000;
-        saveData(data);
+    const embed = new EmbedBuilder()
+      .setTitle(`🏆 RANKING DE HORAS - ${message.guild.name}`)
+      .setDescription(rankingText)
+      .setColor('#FFD700')
+      .setTimestamp();
 
-        return message.channel.send(`➕ Se le sumaron **${minutes} minutos** a <@${targetUser.id}>.`);
+    return message.channel.send({ embeds: [embed] });
+  }
+
+  // 3. Comando !sumarhoras @usuario <horas>
+  if (content.startsWith('!sumarhoras')) {
+    if (!isRRHH(message.member)) {
+      return message.reply('❌ No tienes permisos de RRHH.');
     }
 
-    // 4. 👑 Restar horas (!restarhoras @usuario 30)
-    if (message.content.startsWith('!restarhoras')) {
-        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
-        const args = message.content.split(' ');
-        const targetUser = message.mentions.users.first();
-        const minutes = parseInt(args[2]);
+    const args = content.split(' ');
+    const target = message.mentions.members.first();
+    const hoursToAdd = parseFloat(args[2]);
 
-        if (!targetUser || isNaN(minutes)) return message.reply('⚠️ Uso: `!restarhoras @Usuario <minutos>`');
-
-        const data = loadData();
-        if (!data.totalHours[targetUser.id]) data.totalHours[targetUser.id] = 0;
-        data.totalHours[targetUser.id] = Math.max(0, data.totalHours[targetUser.id] - (minutes * 60 * 1000));
-        saveData(data);
-
-        return message.channel.send(`➖ Se le restaron **${minutes} minutos** a <@${targetUser.id}>.`);
+    if (!target || isNaN(hoursToAdd) || hoursToAdd <= 0) {
+      return message.reply('⚠️ Uso correcto: `!sumarhoras @usuario 2` (para sumar 2 horas).');
     }
 
-    // 5. 👑 Resetear a 0 (!resetearhoras @usuario)
-    if (message.content.startsWith('!resetearhoras')) {
-        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
-        const targetUser = message.mentions.users.first();
-        if (!targetUser) return message.reply('⚠️ Uso: `!resetearhoras @Usuario`');
+    const msToAdd = hoursToAdd * 3600 * 1000;
+    db[guildId].totalTimeMs[target.id] = (db[guildId].totalTimeMs[target.id] || 0) + msToAdd;
+    db[guildId].userNames[target.id] = target.displayName;
+    saveData(db);
 
-        const data = loadData();
-        data.totalHours[targetUser.id] = 0;
-        saveData(data);
+    return message.reply(`✅ Se agregaron **${hoursToAdd} horas** correctamente a **${target.displayName}** en este servidor.`);
+  }
 
-        return message.channel.send(`🔄 Horas de <@${targetUser.id}> reiniciadas a **0**.`);
+  // 4. Comando !restarhoras @usuario <horas>
+  if (content.startsWith('!restarhoras')) {
+    if (!isRRHH(message.member)) {
+      return message.reply('❌ No tienes permisos de RRHH.');
     }
 
-    // 6. 👑 Forzar salida (!forzarsalida @usuario [descartar])
-    if (message.content.startsWith('!forzarsalida') || message.content.startsWith('!fs')) {
-        if (!isStaff(message.member)) return message.reply('❌ No tienes permisos.');
-        const targetUser = message.mentions.users.first();
-        if (!targetUser) return message.reply('⚠️ Debes mencionar al oficial. Ejemplo: `!forzarsalida @Oficial`');
+    const args = content.split(' ');
+    const target = message.mentions.members.first();
+    const hoursToSub = parseFloat(args[2]);
 
-        const data = loadData();
-        const userId = targetUser.id;
-
-        if (!data.activeSessions[userId]) return message.reply(`⚠️ <@${userId}> **no tiene un turno activo**.`);
-
-        const args = message.content.split(' ');
-        const mode = args[2] ? args[2].toLowerCase() : 'guardar';
-
-        const startTime = data.activeSessions[userId];
-        const elapsedMs = Date.now() - startTime;
-        delete data.activeSessions[userId];
-
-        if (mode === 'descartar') {
-            saveData(data);
-            return message.reply(`🛑 Turno de <@${userId}> cancelado **sin guardar horas**.`);
-        } else {
-            if (!data.totalHours[userId]) data.totalHours[userId] = 0;
-            data.totalHours[userId] += elapsedMs;
-            saveData(data);
-
-            const minutesWorked = Math.floor(elapsedMs / (1000 * 60));
-            return message.reply(`🔴 Salida forzada para <@${userId}>. Se sumaron **${minutesWorked} min**.`);
-        }
+    if (!target || isNaN(hoursToSub) || hoursToSub <= 0) {
+      return message.reply('⚠️ Uso correcto: `!restarhoras @usuario 1` (para restar 1 hora).');
     }
+
+    const msToSub = hoursToSub * 3600 * 1000;
+    const current = db[guildId].totalTimeMs[target.id] || 0;
+    db[guildId].totalTimeMs[target.id] = Math.max(0, current - msToSub);
+    saveData(db);
+
+    return message.reply(`✅ Se restaron **${hoursToSub} horas** a **${target.displayName}** en este servidor.`);
+  }
+
+  // 5. Comando !forzarsalida @usuario
+  if (content.startsWith('!forzarsalida')) {
+    if (!isRRHH(message.member)) {
+      return message.reply('❌ No tienes permisos de RRHH.');
+    }
+
+    const target = message.mentions.members.first();
+    if (!target) {
+      return message.reply('⚠️ Uso correcto: `!forzarsalida @usuario`.');
+    }
+
+    if (!db[guildId].activeSessions[target.id]) {
+      return message.reply(`ℹ️ El usuario **${target.displayName}** no tenía un turno activo en este servidor.`);
+    }
+
+    delete db[guildId].activeSessions[target.id];
+    saveData(db);
+
+    return message.reply(`🛑 Se forzó la salida del servicio para **${target.displayName}** en este servidor sin guardar horas incompletas.`);
+  }
 });
 
-// --- BOTONES DEL PANEL ---
+// --- INTERACCIÓN DE BOTONES ---
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
+  if (!interaction.isButton() || !interaction.guild) return;
 
-    const data = loadData();
-    const userId = interaction.user.id;
-    const now = Date.now();
+  const guildId = interaction.guild.id;
+  const userId = interaction.user.id;
+  const displayName = interaction.member ? interaction.member.displayName : interaction.user.username;
 
-    if (interaction.customId === 'btn_entrada') {
-        if (data.activeSessions[userId]) {
-            return interaction.reply({ content: '⚠️ Ya tienes un turno activo.', flags: 64 });
-        }
-        data.activeSessions[userId] = now;
-        saveData(data);
-        return interaction.reply({ content: `✅ **ENTRADA REGISTRADA** - ¡Buen servicio <@${userId}>!`, flags: 64 });
+  const db = loadData();
+  ensureGuildData(db, guildId);
+
+  const guildData = db[guildId];
+  guildData.userNames[userId] = displayName;
+
+  if (interaction.customId === 'btn_entrada') {
+    if (guildData.activeSessions[userId]) {
+      const startTime = guildData.activeSessions[userId];
+      const elapsed = Date.now() - startTime;
+      return interaction.reply({
+        content: `⚠️ Ya tienes un turno activo iniciado hace **${formatDuration(elapsed)}**. Debes marcar salida antes de iniciar otro.`,
+        ephemeral: true
+      });
     }
 
-    if (interaction.customId === 'btn_salida') {
-        if (!data.activeSessions[userId]) {
-            return interaction.reply({ content: '⚠️ No tienes un turno activo.', flags: 64 });
-        }
-        const startTime = data.activeSessions[userId];
-        const elapsedMs = now - startTime;
-        delete data.activeSessions[userId];
+    guildData.activeSessions[userId] = Date.now();
+    saveData(db);
 
-        if (!data.totalHours[userId]) data.totalHours[userId] = 0;
-        data.totalHours[userId] += elapsedMs;
-        saveData(data);
+    return interaction.reply({
+      content: `🟢 **Entrada registrada:** ¡Buen servicio, oficial **${displayName}**! Hora de inicio: <t:${Math.floor(Date.now() / 1000)}:T>.`,
+      ephemeral: true
+    });
+  }
 
-        const minutesWorked = Math.floor(elapsedMs / (1000 * 60));
-        return interaction.reply({ content: `🔴 **SALIDA REGISTRADA** - Estuviste en servicio **${minutesWorked} minutos**.`, flags: 64 });
+  if (interaction.customId === 'btn_salida') {
+    if (!guildData.activeSessions[userId]) {
+      return interaction.reply({
+        content: `⚠️ No tienes un turno activo registrado en este servidor. Marca entrada primero.`,
+        ephemeral: true
+      });
     }
 
-    if (interaction.customId === 'btn_horas') {
-        const totalMs = data.totalHours[userId] || 0;
-        let activeText = '';
-        if (data.activeSessions[userId]) {
-            const currentMins = Math.floor((now - data.activeSessions[userId]) / (1000 * 60));
-            activeText = `\n⏱️ *Turno en progreso:* **${currentMins} min**`;
-        }
-        const totalHrs = (totalMs / (1000 * 60 * 60)).toFixed(2);
-        return interaction.reply({ content: `📊 <@${userId}>, tu tiempo acumulado es **${totalHrs} horas**.${activeText}`, flags: 64 });
+    const startTime = guildData.activeSessions[userId];
+    const sessionMs = Date.now() - startTime;
+
+    delete guildData.activeSessions[userId];
+    guildData.totalTimeMs[userId] = (guildData.totalTimeMs[userId] || 0) + sessionMs;
+    saveData(db);
+
+    return interaction.reply({
+      content: `🔴 **Salida registrada:** Servicio finalizado.\n⏱️ **Tiempo servido hoy:** ${formatDuration(sessionMs)}\n📈 **Total acumulado en este servidor:** ${formatDuration(guildData.totalTimeMs[userId])}`,
+      ephemeral: true
+    });
+  }
+
+  if (interaction.customId === 'btn_mishoras') {
+    const totalMs = guildData.totalTimeMs[userId] || 0;
+    const isWorking = guildData.activeSessions[userId];
+
+    let msg = `📊 **Tus Horas Totales en ${interaction.guild.name}:** ${formatDuration(totalMs)}`;
+    if (isWorking) {
+      const currentMs = Date.now() - isWorking;
+      msg += `\n🟢 *Actualmente en servicio:* lleva **${formatDuration(currentMs)}** de turno activo.`;
     }
 
-    if (interaction.customId === 'btn_ranking') {
-        const entries = Object.entries(data.totalHours);
-        if (entries.length === 0) return interaction.reply({ content: '🏆 Sin registros aún.', flags: 64 });
-
-        entries.sort((a, b) => b[1] - a[1]);
-        let msg = '🏆 **TOP 5 OFICIALES** 🏆\n\n';
-        entries.slice(0, 5).forEach(([uId, ms], i) => {
-            msg += `**#${i + 1}** <@${uId}> — **${(ms / (1000 * 60 * 60)).toFixed(2)} hrs**\n`;
-        });
-        return interaction.reply({ content: msg, flags: 64 });
-    }
+    return interaction.reply({
+      content: msg,
+      ephemeral: true
+    });
+  }
 });
 
-client.login(process.env.TOKEN);
+// LOGIN EN DISCORD
+client.login(process.env.DISCORD_TOKEN);
